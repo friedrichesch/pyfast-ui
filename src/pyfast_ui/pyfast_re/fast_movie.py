@@ -613,10 +613,15 @@ class FastMovie:
         movie_export = MovieExport(self)
         movie_export.export_mp4(fps_factor, contrast, color_map, label_frames)
 
-    def export_tiff(self) -> None:
-        """Export the movie as multipage TIFF file."""
+    def export_tiff(self, double_x_pixels: bool = False) -> None:
+        """Export the movie as multipage TIFF file.
+
+        Args:
+            double_x_pixels: Interpolate interlaced frames to twice the number
+                of columns, so that their pixels become square.
+        """
         export = MovieExport(self)
-        export.export_tiff()
+        export.export_tiff(double_x_pixels)
 
     def export_frames_txt(self, frame_range: tuple[int, int]) -> None:
         """Export frames as .txt file (ASCII matrix).

@@ -97,6 +97,7 @@ class ExportConfig(BaseModel):
     export_movie: bool = True
     export_tiff: bool = True
     export_frames: bool = False
+    double_x_pixels_tiff: bool = False
     scaling: int = 2
     fps_factor: int = 5
     auto_label: bool = True
