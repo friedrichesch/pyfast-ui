@@ -27,8 +27,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from skimage.transform import resize
-
 from pyfast_ui.pyfast_re.channels import Channels
 from pyfast_ui.pyfast_re.data_mode import DataMode, reshape_data
 from pyfast_ui.pyfast_re.fast_movie import FastMovie
@@ -183,28 +181,27 @@ class MovieWindow(QWidget):
         self.plot_data = data
         print(f"{self.plot_data.shape=}")
 
+    def pixel_aspect(self) -> float:
+        """The `aspect` matplotlib needs in order to display the frames with
+        their true proportions.
+
+        See [`Metadata.pixel_aspect`][pyfast_ui.pyfast_re.fast_movie.Metadata.pixel_aspect].
+        """
+        return self.ft.metadata.pixel_aspect(self.picked_channels)
+
     def create_plot(self) -> None:
         """Creates an image plot of the `FastMovie`'s data."""
         self.update_plot_data()
 
-        if self.picked_channels.is_interlaced():
-            print("=" * 80, "RESIZE")
-            num_frames = self.plot_data.shape[0]
-            y_shape = self.plot_data.shape[1]
-            x_shape = self.plot_data.shape[2] * 2
-            print(num_frames, y_shape, x_shape)
-            data_scaled = np.zeros((num_frames, y_shape, x_shape))
-            for i in range(num_frames):
-                data_scaled[i] = resize(
-                    self.plot_data[i], (y_shape, x_shape)
-                )
-            self.plot_data = data_scaled
-
         self.ax = self.canvas.figure.subplots()
+        # The frames are shown as they are; only the rendered pixel shape is
+        # adjusted. `plot_data` therefore keeps the index coordinates of
+        # `FastMovie.data`, which the rectangle selection relies on.
         self.img_plot = self.ax.imshow(
             self.plot_data[self.current_frame_num],
             interpolation="none",
             cmap=self.colormap,
+            aspect=self.pixel_aspect(),
         )
 
         self.img_plot.set_clim(self.ft.data.min(), self.ft.data.max())
@@ -245,7 +242,11 @@ class MovieWindow(QWidget):
             minspanx=5,
             minspany=5,
             useblit=True,
-            use_data_coordinates=True,
+            # False, so that the "square" state below constrains the selection
+            # to a physically square area on screen instead of to an equal
+            # number of pixels in x and y. `corners` stays in data (index)
+            # coordinates either way.
+            use_data_coordinates=False,
             interactive=True,
             drag_from_anywhere=True,
         )

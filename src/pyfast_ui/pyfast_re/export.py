@@ -17,6 +17,39 @@ if TYPE_CHECKING:
     from pyfast_ui.pyfast_re.fast_movie import FastMovie
 
 
+def _square_pixel_size(
+    fast_movie: FastMovie, num_y_pixels: int, num_x_pixels: int, even: bool = False
+) -> tuple[int, int]:
+    """Output size in square pixels that reproduces the physical proportions of
+    a frame.
+
+    Raster formats have no notion of non-square pixels, so the frame has to be
+    stretched along one axis on the way out. Only upsampling is used, so no
+    information is lost, and the stretching is left to the renderer instead of
+    resampling the movie.
+
+    Args:
+        fast_movie: The movie to be exported.
+        num_y_pixels: Number of rows of the frames.
+        num_x_pixels: Number of columns of the frames.
+        even: Force both results to be even, as required by H.264.
+
+    Returns:
+        Number of output rows and output columns.
+    """
+    assert fast_movie.channels is not None  # type assertion
+
+    pixel_aspect = fast_movie.metadata.pixel_aspect(fast_movie.channels)
+    out_y = int(round(num_y_pixels * max(1.0, pixel_aspect)))
+    out_x = int(round(num_x_pixels * max(1.0, 1.0 / pixel_aspect)))
+
+    if even:
+        out_y += out_y % 2
+        out_x += out_x % 2
+
+    return out_y, out_x
+
+
 @final
 class MovieExport:
     """Handles export of a complete movie.
@@ -62,14 +95,22 @@ class MovieExport:
 
         px: float = 1 / plt.rcParams["figure.dpi"]  # pixel in inches
 
+        # Video pixels are square, so the frame is stretched to its physical
+        # proportions by the figure size; `aspect="auto"` lets the frame fill
+        # the axes. The data itself is not resampled.
+        out_y_pixels, out_x_pixels = _square_pixel_size(
+            self.fast_movie, num_y_pixels, num_x_pixels, even=True
+        )
+
         fig, ax = plt.subplots(  # pyright: ignore[reportUnknownMemberType]
-            figsize=(num_x_pixels * px, num_y_pixels * px),
+            figsize=(out_x_pixels * px, out_y_pixels * px),
             frameon=False,
         )
         img_plot = ax.imshow(  # pyright: ignore[reportUnknownMemberType]
             self.fast_movie.data[0],  # pyright: ignore[reportAny]
             cmap=color_map,
             interpolation="none",
+            aspect="auto",
         )
 
         # Adjust color scale
@@ -88,11 +129,11 @@ class MovieExport:
             right_text = f"{frame_offset / fps:.3f}s"
 
             padding = 0.02
-            fontsize = 0.05 * num_y_pixels
+            fontsize = 0.05 * out_y_pixels
 
             label_left = ax.text(  # pyright: ignore[reportUnknownMemberType]
                 num_x_pixels * padding,
-                num_x_pixels * padding,
+                num_y_pixels * padding,
                 text_left,
                 fontsize=fontsize,
                 color="white",
@@ -102,7 +143,7 @@ class MovieExport:
             )
             label_right = ax.text(  # pyright: ignore[reportUnknownMemberType]
                 num_x_pixels - (num_x_pixels * padding),
-                num_x_pixels * padding,
+                num_y_pixels * padding,
                 right_text,
                 fontsize=fontsize,
                 color="white",
@@ -149,14 +190,36 @@ class MovieExport:
         ani.save(f"{self.export_filepath}.mp4")
 
     def export_tiff(self) -> None:
-        """Export the movie as multipage TIFF file."""
-        frame_stack = [Image.fromarray(frame) for frame in self.fast_movie.data]  # pyright: ignore[reportAny]
+        """Export the movie as multipage TIFF file.
+
+        The pixel values are written unchanged. The physical proportions are
+        carried by the resolution tags, so viewers can display the frames
+        correctly without the data being resampled.
+        """
+        assert self.fast_movie.channels is not None  # type assertion
+
+        data = self.fast_movie.data
+        pixel_aspect = self.fast_movie.metadata.pixel_aspect(self.fast_movie.channels)
+
+        # Resolution is pixels per unit length, so a row that is `pixel_aspect`
+        # times taller than a column is wide means a correspondingly lower
+        # resolution in y. ResolutionUnit 1 means "no absolute unit", which is
+        # the standard way of expressing an aspect ratio only.
+        x_resolution = 1000.0
+        y_resolution = x_resolution / pixel_aspect
+
+        frame_stack = [Image.fromarray(frame) for frame in data]  # pyright: ignore[reportAny]
         frame_stack[0].save(
             f"{self.export_filepath}.tiff",
             save_all=True,
             append_images=frame_stack[1:],
             compression=None,
-            tiffinfo={277: 1},
+            tiffinfo={
+                277: 1,  # SamplesPerPixel
+                282: x_resolution,  # XResolution
+                283: y_resolution,  # YResolution
+                296: 1,  # ResolutionUnit: none
+            },
         )
 
 
@@ -216,13 +279,24 @@ class FrameExport:
 
         data = self.fast_movie.data[frame_start:frame_end, :, :]
 
+        # Gwyddion takes the proportions of an ASCII matrix from the Width and
+        # Height fields, so they carry the pixel aspect instead of the data
+        # being resampled. See `_gwy_real_dimensions` for the choice of scale.
+        pixel_aspect = self.fast_movie.metadata.pixel_aspect(self.fast_movie.channels)
+        width, height = _gwy_real_dimensions(
+            pixel_aspect, data.shape[1], data.shape[2]
+        )
+
         for i in TqdmLogger(range(data.shape[0]), desc="Exporting frames"):
             frame: NDArray[np.float32] = data[i]
             frame_id = i // 2 if self.fast_movie.channels.is_up_and_down() else i
             frame_id += self.frame_offset
             channel_id = next(frame_channel_iterator)
             frame_name = f"{self.fast_movie.path.stem}_{frame_id}{channel_id}"
-            header = f"Channel: {frame_name}\nWidth: 1 m\nHeight: 1 m\nValue units: m"
+            header = (
+                f"Channel: {frame_name}\nWidth: {width:.6g} m\n"
+                f"Height: {height:.6g} m\nValue units: m"
+            )
             export_filename = f"{self._export_filename(frame_id, channel_id)}.txt"
             np.savetxt(
                 export_filename, frame, delimiter="\t", header=header, fmt="%.4e"
@@ -256,15 +330,23 @@ class FrameExport:
 
         px: float = 1 / plt.rcParams["figure.dpi"]  # pixel in inches
 
+        # Image pixels are square, so the frame is stretched to its physical
+        # proportions by the figure size instead of by resampling the data.
+        out_y_pixels, out_x_pixels = _square_pixel_size(
+            self.fast_movie, num_y_pixels, num_x_pixels
+        )
+
         for i in TqdmLogger(range(data.shape[0]), desc="Exporting frames"):
             frame_id = i // 2 if self.fast_movie.channels.is_up_and_down() else i
             frame_id += self.frame_offset
             channel_id = next(frame_channel_iterator)
             fig, ax = plt.subplots(  # pyright: ignore[reportUnknownMemberType]
-                figsize=(num_x_pixels * px, num_y_pixels * px),
+                figsize=(out_x_pixels * px, out_y_pixels * px),
                 frameon=False,
             )
-            img_plot = ax.imshow(data[i], cmap=color_map, interpolation="none")  # pyright: ignore[reportAny, reportUnknownMemberType]
+            img_plot = ax.imshow(  # pyright: ignore[reportAny, reportUnknownMemberType]
+                data[i], cmap=color_map, interpolation="none", aspect="auto"
+            )
             img_plot.set_clim(min_absolute, max_absolute)
 
             fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
@@ -334,6 +416,7 @@ def _gwy_writer_images(
     if fast_movie.channels.is_up_and_down():
         frame_end *= 2
     data: NDArray[np.float32] = fast_movie.data[frame_start:frame_end, :, :]
+    pixel_aspect = fast_movie.metadata.pixel_aspect(fast_movie.channels)
 
     for i in range(data.shape[0]):
         frame_id = i // 2 if fast_movie.channels.is_up_and_down() else i
@@ -346,7 +429,7 @@ def _gwy_writer_images(
 
         top_level_container_content += (
             channel_key
-            + _gwy_make_datafield(data[i])  # pyright: ignore[reportAny]
+            + _gwy_make_datafield(data[i], pixel_aspect)  # pyright: ignore[reportAny]
             + title_key
             + channel_title
             + _gwy_make_datafield_meta(i, fast_movie.metadata.as_dict())
@@ -380,8 +463,9 @@ def _gwy_writer_volume(
     if fast_movie.channels.is_up_and_down():
         frame_end *= 2
     data: NDArray[np.float32] = fast_movie.data[frame_start:frame_end, :, :]
+    pixel_aspect = fast_movie.metadata.pixel_aspect(fast_movie.channels)
 
-    preview = b"/brick/0/preview\0o" + _gwy_make_datafield(data[0])  # pyright: ignore[reportAny]
+    preview = b"/brick/0/preview\0o" + _gwy_make_datafield(data[0], pixel_aspect)  # pyright: ignore[reportAny]
 
     GWY_HEADER = b"GWYP"
     top_level_container: bytes = b""
@@ -393,7 +477,7 @@ def _gwy_writer_volume(
 
     top_level_container += (
         channel_key
-        + _gwy_make_brick(data)
+        + _gwy_make_brick(data, pixel_aspect)
         + preview
         + title
         + _gwy_make_brick_meta(fast_movie.metadata.as_dict())
@@ -407,12 +491,37 @@ def _gwy_writer_volume(
         _ = f.write(content)
 
 
-def _gwy_make_datafield(frame: NDArray[np.float32]) -> bytes:
+def _gwy_real_dimensions(pixel_aspect: float, yres: int, xres: int) -> tuple[float, float]:
+    """Lateral dimensions to declare in a .gwy file.
+
+    Gwyddion derives the displayed proportions and all lateral measurements from
+    `xreal` and `yreal`, so the correct ratio has to be written there rather than
+    the data being resampled. The x dimension is kept at 1.0, as before, because
+    the FAST metadata states the scan amplitudes without a unit; only the ratio
+    is well defined. Substitute the amplitudes here once their unit is known.
+
+    Args:
+        pixel_aspect: Physical height of one row over physical width of one
+            column.
+        yres: Number of rows.
+        xres: Number of columns.
+
+    Returns:
+        The values for `xreal` and `yreal`.
+    """
+    return 1.0, yres * pixel_aspect / xres
+
+
+def _gwy_make_datafield(
+    frame: NDArray[np.float32], pixel_aspect: float = 1.0
+) -> bytes:
     """Constructs a GwyDatafield as defined by the .gwy file format
     (http://gwyddion.net/documentation/user-guide-en/gwyfile-format.html).
 
     Args:
         frame: The frame (2D array) for which the datafield bytes are created.
+        pixel_aspect: Physical height of one row over physical width of one
+            column, see `Metadata.pixel_aspect`.
 
     Returns:
         GwyDataField as bytes.
@@ -421,11 +530,12 @@ def _gwy_make_datafield(frame: NDArray[np.float32]) -> bytes:
         raise ValueError(f"frame must be 2D array, got {frame.ndim}")
 
     yres, xres = frame.shape
+    xreal, yreal = _gwy_real_dimensions(pixel_aspect, yres, xres)
 
     datafield = b"".join(
         [
-            b"xreal\0d" + struct.pack("<d", 1.0),
-            b"yreal\0d" + struct.pack("<d", 1.0),
+            b"xreal\0d" + struct.pack("<d", xreal),
+            b"yreal\0d" + struct.pack("<d", yreal),
             b"xoff\0d" + struct.pack("<d", 0),
             b"yoff\0d" + struct.pack("<d", 0),
             b"xres\0i" + struct.pack("<i", xres),
@@ -436,7 +546,6 @@ def _gwy_make_datafield(frame: NDArray[np.float32]) -> bytes:
     datafield += _gwy_make_si_unit("xy")
     datafield += _gwy_make_si_unit("z")
 
-    frame[0:10, :] = 0.0
     data_arr = frame.flatten().astype(np.float64)
     data_arr_size = len(data_arr)
 
@@ -448,12 +557,14 @@ def _gwy_make_datafield(frame: NDArray[np.float32]) -> bytes:
     return b"GwyDataField\0" + datafield_size + datafield
 
 
-def _gwy_make_brick(movie: NDArray[np.float32]) -> bytes:
+def _gwy_make_brick(movie: NDArray[np.float32], pixel_aspect: float = 1.0) -> bytes:
     """Constructs a GwyBrick as defined by the .gwy file format.
     (http://gwyddion.net/documentation/user-guide-en/gwyfile-format.html).
 
     Args:
         movie: The movie (3D array) for which the brick bytes are created.
+        pixel_aspect: Physical height of one row over physical width of one
+            column, see `Metadata.pixel_aspect`.
 
     Returns:
         GwyBrick as bytes.
@@ -462,11 +573,12 @@ def _gwy_make_brick(movie: NDArray[np.float32]) -> bytes:
         raise ValueError(f"movie must be 3D array, got {movie.ndim}D")
 
     zres, yres, xres = movie.shape
+    xreal, yreal = _gwy_real_dimensions(pixel_aspect, yres, xres)
 
     brick = b"".join(
         [
-            b"xreal\0d" + struct.pack("<d", 1.0),
-            b"yreal\0d" + struct.pack("<d", 1.0),
+            b"xreal\0d" + struct.pack("<d", xreal),
+            b"yreal\0d" + struct.pack("<d", yreal),
             b"xoff\0d" + struct.pack("<d", 0),
             b"yoff\0d" + struct.pack("<d", 0),
             b"xres\0i" + struct.pack("<i", xres),

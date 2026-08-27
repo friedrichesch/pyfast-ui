@@ -458,9 +458,10 @@ class MainGui(QMainWindow):
             x_start, y_start = ul
             y_end = ll[1]
             x_end = lr[0]
-            if ft.channels is not None and ft.channels.is_interlaced():
-                x_start = round(x_start / 2)
-                x_end = round(x_end / 2)
+            # No channel dependent rescaling of the x coordinates any more: the
+            # plot shows `FastMovie.data` unresampled, so the selection is
+            # already given in data column indices (see
+            # `MovieWindow.pixel_aspect`).
             print(f"cropping with {y_start}, {y_end=}, {x_start=}, {x_end=}")
 
             fast_movie_window.stop_playing()
@@ -723,12 +724,13 @@ class MainGui(QMainWindow):
         frame_export_images = self.export_group.frame_export_images
         frame_export_format = self.export_group.frame_export_format
 
+        # No channel dependent rescaling of the data any more. Every exporter
+        # derives the physical proportions from `Metadata.pixel_aspect`: the
+        # raster formats through the output size, the Gwyddion and TIFF writers
+        # through their dimension tags. The pixel values are left untouched.
         data_copy = ft.data.copy()
 
         if export_movie:
-            if ft.channels is not None and ft.channels.is_interlaced():
-                ft.rescale((1, 2))
-
             ft.rescale((scaling, scaling))
             ft.export_mp4(
                 fps_factor=fps_factor,
@@ -741,21 +743,10 @@ class MainGui(QMainWindow):
 
         if export_frames:
             if frame_export_format == "gwy":
-                if ft.channels is not None and ft.channels.is_interlaced():
-                    ft.rescale((1, 2))
-
                 ft.export_frames_gwy("images", frame_range=frame_export_images)
-                ft.data = data_copy
             elif frame_export_format == "txt":
-                if ft.channels is not None and ft.channels.is_interlaced():
-                    ft.rescale((1, 2))
-
                 ft.export_frames_txt(frame_range=frame_export_images)
-                ft.data = data_copy
             else:
-                if ft.channels is not None and ft.channels.is_interlaced():
-                    ft.rescale((1, 2))
-
                 ft.rescale((scaling, scaling))
                 ft.export_frames_image(
                     image_format=frame_export_format,
@@ -767,10 +758,7 @@ class MainGui(QMainWindow):
                 ft.data = data_copy
 
         if export_tiff:
-            if ft.channels is not None and ft.channels.is_interlaced():
-                ft.rescale((1, 2))
             ft.export_tiff()
-            ft.data = data_copy
 
     def on_image_correction_apply(self) -> None:
         """Callback for 'Apply' button of the `ImageCorrectionGroup`. Applies
