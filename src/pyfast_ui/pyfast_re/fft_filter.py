@@ -86,6 +86,12 @@ class FftFilter:
 
         freqs, pars, types = self._determine_filter_frequencies()
 
+        # Preserve the DC component (bin 0), i.e. the constant offset of the
+        # timeseries. Filters such as the y-filter or the high-pass have a
+        # non-zero response at f = 0 and would otherwise remove the offset as a
+        # side effect, which is not intended.
+        dc_component = data_fft[0]  # pyright: ignore[reportUnknownVariableType]
+
         for filter_freq, par, type_ in zip(freqs, pars, types):
             if type_ == FftFilterType.GAUSS:
                 filter = 1.0 - np.exp(-0.5 * ((frequencies - filter_freq) / par) ** 2)
@@ -112,6 +118,9 @@ class FftFilter:
             )
 
             data_fft *= filter  # pyright: ignore[reportUnknownVariableType]
+
+        ## Restore the offset
+        data_fft[0] = dc_component
 
         return scipy.fft.irfft(data_fft).astype(np.float32)  # pyright: ignore[reportUnknownArgumentType]
 
