@@ -415,6 +415,23 @@ def _overlap(
     return a[ay0:ay1, ax0:ax1], b[by0:by1, bx0:bx1]
 
 
+_MIN_OVERLAP = 0.5
+"""Smallest share of a frame that two frames must still share for a match to
+count. The normalised correlation divides by the overlap, so a displacement
+that leaves only a sliver in common is scored on a handful of pixels and can
+beat the true peak. `skimage` allows down to 0.3 by default, which permits a
+displacement of two thirds of a frame between neighbouring frames; that is far
+outside anything a piezo drift produces and it is exactly where the spurious
+peaks sit."""
+
+_MAX_STEP = 0.2
+"""Largest displacement between two neighbouring frames that the sequential
+chain accepts, as a share of the frame. Beyond this the estimate is treated as
+a failed match and the step is set to zero, which leaves that frame to the
+redundant pairs of the global fit. A wrong jump of half a frame, in contrast,
+is never recovered, because every later pair is measured around it."""
+
+
 def _coarse_shift(
     a: NDArray[np.float32], b: NDArray[np.float32]
 ) -> NDArray[np.float64]:
@@ -422,14 +439,30 @@ def _coarse_shift(
 
     Plain cross correlation sums over the overlap and therefore grows with it,
     which biases the result towards small displacements. The normalised variant
-    divides that out, at some cost in speed.
+    divides that out, at some cost in speed, and needs a floor on the overlap
+    so that it does not bias the other way.
     """
     ones = np.ones(a.shape, dtype=bool)
     result = phase_cross_correlation(  # pyright: ignore[reportUnknownVariableType]
-        a, b, upsample_factor=1, reference_mask=ones, moving_mask=ones
+        a,
+        b,
+        upsample_factor=1,
+        reference_mask=ones,
+        moving_mask=ones,
+        overlap_ratio=_MIN_OVERLAP,
     )
     value = result[0] if isinstance(result, tuple) else result
     return np.asarray(value, dtype=float)
+
+
+def _plausible_step(
+    step: NDArray[np.float64], shape: tuple[int, int]
+) -> bool:
+    """Whether a displacement between neighbouring frames is small enough to be
+    drift rather than a mismatched correlation peak."""
+    return bool(
+        abs(step[0]) <= _MAX_STEP * shape[0] and abs(step[1]) <= _MAX_STEP * shape[1]
+    )
 
 
 def _refine_shift(
@@ -804,11 +837,25 @@ class Drift:
         prepared = np.stack([_bandpass(frame) for frame in self.data])
 
         # Stage one: neighbouring frames only.
+        shape = self.data.shape[1:]
         path = np.zeros((num_frames, 2))
+        implausible = 0
         for i in TqdmLogger(range(1, num_frames), desc="Drift: frame chain"):
             prediction = _coarse_shift(prepared[i - 1], prepared[i])
             measured, _ = _refine_shift(prepared[i - 1], prepared[i], prediction)
-            path[i] = path[i - 1] + (prediction if measured is None else measured)
+            step = prediction if measured is None else measured
+            if not _plausible_step(step, shape):
+                implausible += 1
+                step = np.zeros(2)
+            path[i] = path[i - 1] + step
+
+        if implausible:
+            log.info(
+                "Global drift: %d of %d frame steps looked implausible and were "
+                "left to the global fit.",
+                implausible,
+                num_frames - 1,
+            )
 
         pairs = _frame_pairs(num_frames, window, long_lags, stride)
         for round_index in range(rounds):
