@@ -27,6 +27,75 @@ class InterpolationResult:
     y_coords_measured: NDArray[np.float32]
     x_coords_target: NDArray[np.float32]
     y_coords_target: NDArray[np.float32]
+    invalid_mask: NDArray[np.bool_]
+    """Target grid points, in the shape of an interpolated frame, that lie
+    outside the measured positions and can therefore not be interpolated.
+    Only the matrices actually used for the selected channel contribute."""
+
+
+def valid_window(
+    invalid_mask: NDArray[np.bool_],
+) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Largest rectangle of an interpolated frame that contains no invalid
+    pixels.
+
+    Target grid points outside the measured positions cannot be interpolated
+    and end up as zeros. They form a rim, because the sinusoidal probe movement
+    in x and the finite line spacing in y both fall slightly short of the
+    equidistant target grid. The width of that rim depends on the grid, in
+    particular on the creep correction, so it is measured rather than assumed.
+
+    Args:
+        invalid_mask: Boolean mask of non-interpolatable pixels, in the shape of
+            one interpolated frame.
+
+    Returns:
+        The x range and the y range of the largest valid rectangle, as
+        (start, end) pairs ready to be passed to `FastMovie.crop`.
+    """
+    num_rows, num_cols = invalid_mask.shape
+    top, bottom, left, right = 0, num_rows, 0, num_cols
+
+    while bottom - top > 1 and right - left > 1:
+        window = invalid_mask[top:bottom, left:right]
+        if not window.any():
+            break
+
+        # Drop every edge line of the current window that holds invalid pixels.
+        # One pass removes one rim.
+        trimmed = False
+        if window[0, :].any():
+            top += 1
+            trimmed = True
+        if window[-1, :].any():
+            bottom -= 1
+            trimmed = True
+        if window[:, 0].any():
+            left += 1
+            trimmed = True
+        if window[:, -1].any():
+            right -= 1
+            trimmed = True
+
+        if not trimmed:
+            # Invalid pixels only in the interior; trimming edges cannot help.
+            log.warning(
+                "Interpolation left %d non-interpolatable pixels inside the frame.",
+                int(window.sum()),
+            )
+            break
+
+    log.info(
+        "Interpolation valid window: rows %d:%d of %d, columns %d:%d of %d",
+        top,
+        bottom,
+        num_rows,
+        left,
+        right,
+        num_cols,
+    )
+
+    return (left, right), (top, bottom)
 
 
 def _output_y_grid(num_y_pixels: int, num_x_pixels: int):
@@ -120,6 +189,7 @@ def get_interpolation_matrix(
     triangulation = Delaunay(points_to_triangulate)
     triangles_containing_gridpoints = triangulation.find_simplex(grid_points)
     interpolation_matrix = lil_matrix((len(grid_points), len(points_to_triangulate)))
+    invalid = np.asarray(triangles_containing_gridpoints) == -1
 
     for i in TqdmLogger(
         range(len(grid_points)), desc="Building interpolation matrix", unit="lines"
@@ -144,7 +214,7 @@ def get_interpolation_matrix(
                 interpolation_matrix[i, triangle_corners[j]] = barycentric_coords[j]
 
     interpolation_matrix = csr_matrix(interpolation_matrix)
-    return interpolation_matrix
+    return interpolation_matrix, invalid
 
 
 def determine_interpolation(
@@ -229,8 +299,21 @@ def determine_interpolation(
     grid_points_up = list(zip(y_coords_target.flatten(), x_coords_target.flatten()))
     grid_points_down = list(zip(y_coords_target.flatten(), x_coords_target.flatten()))
 
-    interpolation_matrix_up = get_interpolation_matrix(points_up, grid_points_up)
-    interpolation_matrix_down = get_interpolation_matrix(points_down, grid_points_down)
+    interpolation_matrix_up, invalid_up = get_interpolation_matrix(
+        points_up, grid_points_up
+    )
+    interpolation_matrix_down, invalid_down = get_interpolation_matrix(
+        points_down, grid_points_down
+    )
+
+    # `apply_interpolation` uses only the matrices that the channel calls for,
+    # so only their invalid points restrict the usable area.
+    if fast_movie.channels.is_up_and_down():
+        invalid = invalid_up | invalid_down
+    elif fast_movie.channels.is_up_not_down():
+        invalid = invalid_up
+    else:
+        invalid = invalid_down
 
     # return interpolation_matrix_up, interpolation_matrix_down
     return InterpolationResult(
@@ -240,6 +323,7 @@ def determine_interpolation(
         y_coords_measured=y_coords_measured,
         x_coords_target=x_coords_target,
         y_coords_target=y_coords_target,
+        invalid_mask=invalid.reshape(y_coords_target.shape),
     )
 
 

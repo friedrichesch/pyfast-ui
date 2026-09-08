@@ -28,6 +28,7 @@ from pyfast_ui.pyfast_re.fft_filter import FftFilter, FftFilterParams
 from pyfast_ui.pyfast_re.interpolation import (
     apply_interpolation,
     determine_interpolation,
+    valid_window,
 )
 from pyfast_ui.pyfast_re.phase import PhaseCorrection
 
@@ -373,8 +374,11 @@ class FastMovie:
             interpolation_result.interpolation_matrix_up,
             interpolation_result.interpolation_matrix_down,
         )
-        # Cut off unwanted padding with zeros
-        self.crop((4, self.data.shape[2] - 4), (4, self.data.shape[1] - 4))
+        # Cut off the rim where the target grid lies outside the measured
+        # positions and the interpolation therefore produced zeros. The width of
+        # that rim follows from the grid, so it is measured instead of assumed.
+        x_range, y_range = valid_window(interpolation_result.invalid_mask)
+        self.crop(x_range, y_range)
 
         # plt.scatter(interpolation_result.x_coords_measured.flatten(), interpolation_result.y_coords_measured.flatten(), color="black", s=5)
         # plt.scatter(interpolation_result.x_coords_target.flatten(), interpolation_result.y_coords_target.flatten(), color="red", s=5)
@@ -673,12 +677,78 @@ class Metadata:
         )
         self.scanner_x_frequency = float(self._meta_attrs["Scanner.X_Frequency"])
         self.scanner_y_frequency = float(self._meta_attrs["Scanner.Y_Frequency"])
+        # Physical size of the scanned area. Read optionally, so that files
+        # without these attributes still load; consumers fall back to equal
+        # amplitudes in that case.
+        self.scanner_x_amplitude = self._optional_float("Scanner.X_Amplitude")
+        self.scanner_y_amplitude = self._optional_float("Scanner.Y_Amplitude")
         self.num_images = int(self._meta_attrs["Acquisition.NumImages"])
         self.num_images = self._get_correct_num_images(num_pixels)
         self.num_frames = self.num_images * 4
 
     def as_dict(self) -> dict[Hashable, int | float | str]:
         return self._meta_attrs
+
+    def _optional_float(self, key: Hashable) -> float | None:
+        """Read a metadata attribute that need not be present.
+
+        Args:
+            key: Name of the attribute.
+
+        Returns:
+            The value as float, or `None` if the attribute is missing or not
+            numeric.
+        """
+        value = self._meta_attrs.get(key)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def pixel_aspect(self, channels: Channels) -> float:
+        """Physical height of one data row divided by the physical width of one
+        data column, for a nominal frame of the given channel.
+
+        A nominal frame spans `Scanner.X_Amplitude` over `Scanner.X_Points`
+        columns and `Scanner.Y_Amplitude` over its rows, so a nominal frame
+        displayed with this aspect has the overall proportions
+        `Scanner.Y_Amplitude / Scanner.X_Amplitude`, independently of the pixel
+        numbers. Interlaced channels hold the forward and the backward line of
+        every scan line and therefore twice the number of rows for the same y
+        range.
+
+        The value describes the pixel size, not the frame size. It is therefore
+        unaffected by interpolation, cropping and drift correction, which change
+        the number of pixels but not their physical size; images produced by
+        those steps keep the correct proportions.
+
+        Args:
+            channels: The channel the frames were extracted for.
+
+        Returns:
+            The aspect ratio to pass to matplotlib as `aspect`.
+        """
+        num_rows = self.scanner_y_points * (2 if channels.is_interlaced() else 1)
+        num_cols = self.scanner_x_points
+
+        x_amplitude = self.scanner_x_amplitude
+        y_amplitude = self.scanner_y_amplitude
+        if (
+            x_amplitude is None
+            or y_amplitude is None
+            or not x_amplitude > 0.0
+            or not y_amplitude > 0.0
+        ):
+            # No usable scan ranges in the metadata: assume a square scan area.
+            # A ratio of zero or NaN would propagate into divisions further
+            # down, so anything but a positive value falls back as well.
+            amplitude_ratio = 1.0
+        else:
+            amplitude_ratio = y_amplitude / x_amplitude
+
+        return amplitude_ratio * num_cols / num_rows
 
     def _get_correct_num_images(self, num_pixels: int) -> int:
         num_x_points: int = int(self._meta_attrs["Scanner.X_Points"])
