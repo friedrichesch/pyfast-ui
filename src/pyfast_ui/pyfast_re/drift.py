@@ -419,23 +419,18 @@ class Drift:
         """
         self._get_drift_correlation()
         self._filter_drift()
-        self._write_drift()
 
         assert self.integrated_trans is not None  # type assertion
 
         match mode:
             case DriftMode.FULL:
-                return DriftCorrectionResult(
-                    self._adjust_movie_buffered(),
-                    self.transformations,
-                    self.integrated_trans,
-                )
+                data = self._adjust_movie_buffered()
             case DriftMode.COMMON:
-                return DriftCorrectionResult(
-                    self._adjust_movie_common(),
-                    self.transformations,
-                    self.integrated_trans,
-                )
+                data = self._adjust_movie_common()
+
+        self._write_drift()
+
+        return DriftCorrectionResult(data, self.transformations, self.integrated_trans)
 
     def correct_phase_cross_correlation(
         self,
@@ -450,23 +445,18 @@ class Drift:
         """
         self._get_drift_phase_cross_correlation()
         self._filter_drift()
-        self._write_drift()
 
         assert self.integrated_trans is not None  # type assertion
 
         match mode:
             case DriftMode.FULL:
-                return DriftCorrectionResult(
-                    self._adjust_movie_buffered(),
-                    self.transformations,
-                    self.integrated_trans,
-                )
+                data = self._adjust_movie_buffered()
             case DriftMode.COMMON:
-                return DriftCorrectionResult(
-                    self._adjust_movie_common(),
-                    self.transformations,
-                    self.integrated_trans,
-                )
+                data = self._adjust_movie_common()
+
+        self._write_drift()
+
+        return DriftCorrectionResult(data, self.transformations, self.integrated_trans)
 
     def correct_stackreg(
         self,
@@ -481,23 +471,18 @@ class Drift:
         """
         self._get_drift_stackreg(stackreg_reference)
         self._filter_drift()
-        self._write_drift()
 
         assert self.integrated_trans is not None  # type assertion
 
         match mode:
             case DriftMode.FULL:
-                return DriftCorrectionResult(
-                    self._adjust_movie_buffered(),
-                    self.transformations,
-                    self.integrated_trans,
-                )
+                data = self._adjust_movie_buffered()
             case DriftMode.COMMON:
-                return DriftCorrectionResult(
-                    self._adjust_movie_common(),
-                    self.transformations,
-                    self.integrated_trans,
-                )
+                data = self._adjust_movie_common()
+
+        self._write_drift()
+
+        return DriftCorrectionResult(data, self.transformations, self.integrated_trans)
 
     def correct_known(
         self,
@@ -530,17 +515,11 @@ class Drift:
 
         match mode:
             case DriftMode.FULL:
-                return DriftCorrectionResult(
-                    self._adjust_movie_buffered(),
-                    self.transformations,
-                    self.integrated_trans,
-                )
+                data = self._adjust_movie_buffered()
             case DriftMode.COMMON:
-                return DriftCorrectionResult(
-                    self._adjust_movie_common(),
-                    self.transformations,
-                    self.integrated_trans,
-                )
+                data = self._adjust_movie_common()
+
+        return DriftCorrectionResult(data, self.transformations, self.integrated_trans)
 
     def _get_drift_correlation(self) -> None:
         """Calculation of the drift path by FFT cross correlation of two frames."""
@@ -644,10 +623,34 @@ class Drift:
             log.info(f"Boxcar filter used with boxsize: {boxwidth}")
 
     def _write_drift(self):
-        """Write a drift.txt file to disc."""
+        """Write a drift.txt file to disc next to the movie.
+
+        The file is a by-product, so a failure to write it is reported and
+        swallowed. It used to be written before the frames were adjusted, which
+        meant that a read-only folder, a network share that had gone away or a
+        full disc discarded the whole drift correction: the exception unwound
+        past the adjustment, the movie came out uncorrected, and the only trace
+        was a line in the log.
+        """
         if self.integrated_trans is None:
             raise ValueError("Drift path not determined yet.")
 
+        if self.transformations is None:
+            # Nothing sequential to write, e.g. a known integrated drift path.
+            return
+
+        try:
+            self._write_drift_file()
+        except OSError as error:
+            log.warning(
+                "Could not write the drift path to %s: %s. The correction itself "
+                "is unaffected.",
+                self.file,
+                error,
+            )
+
+    def _write_drift_file(self) -> None:
+        assert self.integrated_trans is not None  # type assertion
         with open(self.file, "w") as fileobject:
             _ = fileobject.write(
                 "# {0:>10}   {1:>12}  {2:>12}  {3:>12} \n".format(
