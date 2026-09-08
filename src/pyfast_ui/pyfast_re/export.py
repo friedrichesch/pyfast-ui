@@ -7,6 +7,7 @@ from PIL import Image
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
+import skimage
 
 from numpy.typing import NDArray
 from pyfast_ui.pyfast_re.channels import FrameChannelType
@@ -189,17 +190,38 @@ class MovieExport:
 
         ani.save(f"{self.export_filepath}.mp4")
 
-    def export_tiff(self) -> None:
+    def export_tiff(self, double_x_pixels: bool = False) -> None:
         """Export the movie as multipage TIFF file.
 
-        The pixel values are written unchanged. The physical proportions are
-        carried by the resolution tags, so viewers can display the frames
-        correctly without the data being resampled.
+        By default the pixel values are written unchanged and the physical
+        proportions are carried by the resolution tags, so viewers can display
+        the frames correctly without the data being resampled.
+
+        Args:
+            double_x_pixels: Interpolate interlaced frames to twice the number
+                of columns. Interlaced channels hold the forward and the
+                backward line of every scan line, so they have twice as many
+                rows as columns for the same scan area; doubling the columns
+                makes the pixels square. Use this for programs that ignore the
+                resolution tags. Frames of non-interlaced channels are never
+                touched.
         """
         assert self.fast_movie.channels is not None  # type assertion
 
         data = self.fast_movie.data
         pixel_aspect = self.fast_movie.metadata.pixel_aspect(self.fast_movie.channels)
+
+        if double_x_pixels and self.fast_movie.channels.is_interlaced():
+            data = np.array(
+                [
+                    skimage.transform.rescale(frame, (1, 2))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+                    for frame in data  # pyright: ignore[reportAny]
+                ],
+                dtype=np.float32,
+            )
+            # Same physical width over twice the columns halves the column
+            # width, so a row is twice as tall relative to a column.
+            pixel_aspect *= 2.0
 
         # Resolution is pixels per unit length, so a row that is `pixel_aspect`
         # times taller than a column is wide means a correspondingly lower

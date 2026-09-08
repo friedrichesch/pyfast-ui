@@ -27,6 +27,7 @@ class ExportGroup(QGroupBox):
         export_frames: bool,
         frame_export_images: tuple[int, int],
         # frame_export_channel: str,
+        double_x_pixels_tiff: bool,
         scaling: int,
         fps_factor: int,
         frame_export_format: str,
@@ -49,7 +50,18 @@ class ExportGroup(QGroupBox):
             "Frame export images", frame_export_images
         )
 
-        self._scaling = LabeledSpinBox("Scaling", scaling)
+        self._double_x_pixels_tiff = QCheckBox(
+            "Double xpixels in interlaced TIFF files", self
+        )
+        self._double_x_pixels_tiff.setChecked(double_x_pixels_tiff)
+        self._double_x_pixels_tiff.setToolTip(
+            "Interlaced channels (udi, ui, di) hold twice as many rows as"
+            " columns for the same scan area. Doubling the number of x pixels"
+            " on export makes the pixels square, so a square scan stays square"
+            " in programs that ignore the resolution tags."
+        )
+
+        self._scaling = LabeledSpinBox("Scaling (movie and images)", scaling)
 
         fps_factor_lbl = QLabel("FPS factor")
         self._fps_factor = QSpinBox(self)
@@ -87,6 +99,7 @@ class ExportGroup(QGroupBox):
         layout.addWidget(self._export_movie, 0, 0)
         layout.addWidget(self._export_tiff, 0, 1)
         layout.addWidget(self._export_frames, 0, 2)
+        layout.addWidget(self._double_x_pixels_tiff, 1, 0, 1, 3)
         # layout.addLayout(scaling_layout, 2, 0, 1, 3)
         layout.addWidget(self._scaling, 2, 0, 1, 3)
         layout.addLayout(fps_factor_layout, 3, 0, 1, 3)
@@ -137,6 +150,14 @@ class ExportGroup(QGroupBox):
     #     self._frame_export_channel.setCurrentText(value)
 
     @property
+    def double_x_pixels_tiff(self) -> bool:
+        return self._double_x_pixels_tiff.isChecked()
+
+    @double_x_pixels_tiff.setter
+    def double_x_pixels_tiff(self, value: bool) -> None:
+        self._double_x_pixels_tiff.setChecked(value)
+
+    @property
     def scaling(self) -> int:
         return self._scaling.value()
 
@@ -176,6 +197,7 @@ class ExportGroup(QGroupBox):
         self.export_movie = export_config.export_movie
         self.export_tiff = export_config.export_tiff
         self.export_frames = export_config.export_frames
+        self.double_x_pixels_tiff = export_config.double_x_pixels_tiff
         self.scaling = export_config.scaling
         self.fps_factor = export_config.fps_factor
         self.auto_label = export_config.auto_label
@@ -188,6 +210,7 @@ class ExportGroup(QGroupBox):
             export_movie=self.export_movie,
             export_tiff=self.export_tiff,
             export_frames=self.export_frames,
+            double_x_pixels_tiff=self.double_x_pixels_tiff,
             scaling=self.scaling,
             fps_factor=self.fps_factor,
             auto_label=self.auto_label,

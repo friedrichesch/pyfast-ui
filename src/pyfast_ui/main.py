@@ -720,6 +720,7 @@ class MainGui(QMainWindow):
         fps_factor = self.export_group.fps_factor
         scaling = self.export_group.scaling
         auto_label = self.export_group.auto_label
+        double_x_pixels_tiff = self.export_group.double_x_pixels_tiff
 
         frame_export_images = self.export_group.frame_export_images
         frame_export_format = self.export_group.frame_export_format
@@ -758,7 +759,7 @@ class MainGui(QMainWindow):
                 ft.data = data_copy
 
         if export_tiff:
-            ft.export_tiff()
+            ft.export_tiff(double_x_pixels=double_x_pixels_tiff)
 
     def on_image_correction_apply(self) -> None:
         """Callback for 'Apply' button of the `ImageCorrectionGroup`. Applies
