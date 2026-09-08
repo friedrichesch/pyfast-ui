@@ -711,6 +711,8 @@ class Drift:
 
     def _adjust_movie_common(self):
         """Apply drift correction and return only the region common to all frames."""
+        self._check_common_area()
+
         buffered = self._adjust_movie_buffered()
 
         valid = buffered != 0
@@ -718,14 +720,63 @@ class Drift:
 
         ys, xs = np.where(common_mask)
         if ys.size == 0 or xs.size == 0:
-            raise ValueError("No common area exists")
+            raise ValueError(self._no_common_area_message())
 
         y_start, y_end = ys.min(), ys.max() + 1
         x_start, x_end = xs.min(), xs.max() + 1
 
         corr_movie = buffered[:, y_start:y_end, x_start:x_end]
 
+        log.info(
+            "Common area: %d x %d px of the original %d x %d px frame (%.0f %%)",
+            corr_movie.shape[1],
+            corr_movie.shape[2],
+            self.img_height,
+            self.img_width,
+            100.0
+            * corr_movie.shape[1]
+            * corr_movie.shape[2]
+            / (self.img_height * self.img_width),
+        )
+
         return corr_movie
+
+    def _drift_span(self) -> tuple[float, float]:
+        """Peak-to-peak extent of the integrated drift path, in pixels."""
+        assert self.integrated_trans is not None  # type assertion
+
+        y_translations = self.integrated_trans[0]
+        x_translations = self.integrated_trans[1]
+
+        return (
+            float(np.max(y_translations) - np.min(y_translations)),
+            float(np.max(x_translations) - np.min(x_translations)),
+        )
+
+    def _no_common_area_message(self) -> str:
+        y_span, x_span = self._drift_span()
+
+        return (
+            f"No common area exists: the drift path spans {y_span:.0f} x "
+            f"{x_span:.0f} px, which is not smaller than the frame "
+            f"({self.img_height} x {self.img_width} px), so no pixel is "
+            "imaged in every frame. Use the 'full' drift mode for this movie, "
+            "restrict it to a shorter frame range, or check the drift path: a "
+            "span of this size is often a failed registration rather than real "
+            "drift."
+        )
+
+    def _check_common_area(self) -> None:
+        """Reject an impossible common area before the buffer is allocated.
+
+        `_adjust_movie_buffered` holds a second copy of the movie, enlarged by
+        the drift span. For a runaway drift path that copy can be several times
+        the size of the movie, so the geometric test comes first.
+        """
+        y_span, x_span = self._drift_span()
+
+        if y_span >= self.img_height or x_span >= self.img_width:
+            raise ValueError(self._no_common_area_message())
 
 
 # def meanfilter(data, kernel=3):
