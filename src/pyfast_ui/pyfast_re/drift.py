@@ -392,12 +392,26 @@ def _bandpass(frame: NDArray[np.float32]) -> NDArray[np.float32]:
 def _overlap(
     a: NDArray[np.float32], b: NDArray[np.float32], dy: int, dx: int
 ) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
-    """The parts of two frames that coincide when b is displaced by (dy, dx)."""
+    """The parts of two frames that coincide when b is displaced by (dy, dx).
+
+    Both crops are empty when the displacement exceeds the frame, which happens
+    while the path is still being estimated. The bounds are clamped into
+    [0, size] first: an unclamped stop can come out negative, and numpy reads a
+    negative stop as an offset from the end, so one of the two crops would come
+    back non-empty and of a different shape than the other.
+    """
     num_y, num_x = a.shape
-    ay0, ay1 = max(0, dy), min(num_y, num_y + dy)
-    by0, by1 = max(0, -dy), min(num_y, num_y - dy)
-    ax0, ax1 = max(0, dx), min(num_x, num_x + dx)
-    bx0, bx1 = max(0, -dx), min(num_x, num_x - dx)
+
+    def span(size: int, start: int, stop: int) -> tuple[int, int]:
+        low = min(max(start, 0), size)
+        high = min(max(stop, low), size)
+        return low, high
+
+    ay0, ay1 = span(num_y, dy, num_y + dy)
+    by0, by1 = span(num_y, -dy, num_y - dy)
+    ax0, ax1 = span(num_x, dx, num_x + dx)
+    bx0, bx1 = span(num_x, -dx, num_x - dx)
+
     return a[ay0:ay1, ax0:ax1], b[by0:by1, bx0:bx1]
 
 
@@ -441,7 +455,7 @@ def _refine_shift(
     """
     dy, dx = int(round(float(prediction[0]))), int(round(float(prediction[1])))
     a_crop, b_crop = _overlap(a, b, dy, dx)
-    if min(a_crop.shape) < min_side:
+    if a_crop.shape != b_crop.shape or min(a_crop.shape) < min_side:
         return None, 0.0
 
     window = _hann_window(a_crop.shape)
